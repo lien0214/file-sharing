@@ -12,9 +12,8 @@
  * Works for both anonymous guests and authenticated users.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
 import { uploadFile } from '@/lib/upload';
 import { isAuthenticated } from '@/lib/auth';
 
@@ -44,24 +43,16 @@ function formatSize(bytes: number): string {
 const STEP_LABELS = ['Select file', 'Configure', 'Upload', 'Share'];
 
 export default function UploadPage() {
-  const router = useRouter();
   const inputRef = useRef<HTMLInputElement>(null);
 
   const [step, setStep] = useState<Step>('select');
   const [file, setFile] = useState<File | null>(null);
   const [dragging, setDragging] = useState(false);
 
-  // Config
-  const [loggedIn, setLoggedIn] = useState(false);
-  const [permanent, setPermanent] = useState(false);
+  // Config — resolved client-side (localStorage is not available during SSR).
+  const [loggedIn] = useState(() => isAuthenticated());
+  const [permanent, setPermanent] = useState(() => isAuthenticated());
   const [ttlHours, setTtlHours] = useState(24);
-
-  // Resolve auth state client-side (localStorage is not available during SSR).
-  useEffect(() => {
-    const authed = isAuthenticated();
-    setLoggedIn(authed);
-    setPermanent(authed); // logged-in users default to permanent; guests to TTL
-  }, []);
   const [passwordEnabled, setPasswordEnabled] = useState(false);
   const [password, setPassword] = useState('');
 

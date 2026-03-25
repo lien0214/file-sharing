@@ -9,7 +9,7 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { clearToken, isAuthenticated } from '@/lib/auth';
 
 interface NavbarProps {
@@ -19,11 +19,7 @@ interface NavbarProps {
 
 export default function Navbar({ active }: NavbarProps) {
   const router = useRouter();
-  const [authed, setAuthed] = useState(false);
-
-  useEffect(() => {
-    setAuthed(isAuthenticated());
-  }, []);
+  const [authed] = useState(() => isAuthenticated());
 
   function handleLogout() {
     clearToken();

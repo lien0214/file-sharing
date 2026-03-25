@@ -13,7 +13,6 @@ import { use, useState } from 'react';
 import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
 import { getFileMeta, accessFile } from '@/lib/api';
-import { api } from '@/lib/api';
 
 function formatSize(bytes: number): string {
   if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KB`;
