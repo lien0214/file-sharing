@@ -7,52 +7,95 @@
 ### Step-by-step Flow
 
 ```
-Frontend                          NestJS                        MinIO
-   |                                 |                             |
-   |-- SHA-256 (SubtleCrypto) -----> |                             |
-   |   (stream file in 16MB slices) |                             |
-   |                                 |                             |
-   |-- POST /files/upload/init ----> |                             |
-   |   { fileName, size, checksum } |                             |
-   |                                 |-- CreateMultipartUpload --> |
-   |                                 |<-- s3UploadId ------------- |
-   |                                 |                             |
-   |                                 | (save File + UploadSession) |
-   |<-- { fileId, presignedUrl[1] } -|                             |
-   |                                 |                             |
-   | [For each 16MB chunk, 1..N]     |                             |
-   |-- PUT presignedUrl (chunk) ----------------------------> MinIO|
-   |   x-amz-checksum-sha256 per chunk (MinIO validates)          |
-   |<-- ETag ------------------------------------------------ MinIO|
-   |                                 |                             |
-   |-- POST /upload/:id/complete --> |                             |
-   |   { parts: [{partNumber, etag}]}|                             |
-   |                                 |-- CompleteMultipartUpload-> |
-   |                                 |<-- full object checksum ---- |
-   |                                 |                             |
-   |                                 | compare stored vs MinIO SHA |
-   |                                 | if mismatch: abort + 422    |
-   |                                 | if match: status = READY    |
-   |<-- { slug, url } -------------- |                             |
+Browser                     NestJS (backend)              MinIO
+   |                               |                          |
+   | 1. Stream SHA-256 over file   |                          |
+   |    (16 MB slices, @noble/hashes)                         |
+   |                               |                          |
+   | 2. POST /files/upload/init ──►|                          |
+   |    { fileName, size,          |  CreateMultipartUpload ──►|
+   |      mimeType, checksum }     |◄── s3UploadId ───────────|
+   |                               |  Save File (PENDING)     |
+   |                               |  Save UploadSession      |
+   |◄── { fileId, totalParts,  ───|                          |
+   |      presignedUrl (part 1) }  |                          |
+   |                               |                          |
+   | 3. For each 16 MB chunk:      |                          |
+   |    PUT presignedUrl ─────────────────────────────────────►|
+   |    (direct browser → MinIO, backend not involved)        |
+   |◄── ETag (per-part hash) ────────────────────────────────|
+   |                               |                          |
+   |    GET /files/:id/presign/N ─►|  (for parts 2..N)        |
+   |◄── presignedUrl for part N ───|                          |
+   |    PUT presignedUrl ─────────────────────────────────────►|
+   |◄── ETag ────────────────────────────────────────────────|
+   |                               |                          |
+   | 4. POST /files/:id/complete ─►|                          |
+   |    { parts: [                 |  CompleteMultipartUpload ►|
+   |        { partNumber, etag }   |  (MinIO assembles parts) |
+   |      ] }                      |◄── assembled object ─────|
+   |                               |  HeadObject → checksum   |
+   |                               |  compare stored vs MinIO |
+   |                               |  mismatch → abort + 422  |
+   |                               |  match → status = READY  |
+   |                               |  delete UploadSession    |
+   |◄── { slug, url } ────────────|                          |
 ```
 
-### Frontend Checksum (Streaming SHA-256)
+Progress reported to the UI: **0–10%** = hashing, **10–100%** = uploading parts.
+
+### Why the browser PUTs directly to MinIO
+
+The backend generates a **presigned URL** — a time-limited signed URL that authorises one specific PUT. The browser calls MinIO directly with this URL. The backend never handles the raw bytes, which means:
+
+- No memory pressure on the backend
+- No bandwidth cost on the backend (MinIO handles raw I/O)
+- Presigned URLs expire after 1 hour
+
+### Frontend: Streaming SHA-256 (`@noble/hashes`)
 
 ```typescript
-async function computeSHA256(file: File): Promise<string> {
-  // IMPORTANT: Do NOT load the whole file into memory.
-  // Stream through 16MB slices to avoid OOM on large files.
-  const CHUNK = 16 * 1024 * 1024; // 16MB
-  // SubtleCrypto does not support streaming natively.
-  // Use a WASM SHA-256 library (e.g. @noble/hashes) for true streaming.
-  // Fallback: slice → arrayBuffer → update hash object sequentially.
+// frontend/src/lib/upload.ts
+async function computeChecksum(file: File, onProgress?) {
+  const hash = sha256.create();
+  let offset = 0;
+  while (offset < file.size) {
+    const buffer = await file.slice(offset, offset + CHUNK_SIZE).arrayBuffer();
+    hash.update(new Uint8Array(buffer));
+    offset += CHUNK_SIZE;
+    onProgress?.(Math.min(offset / file.size, 1) * 0.1); // first 10%
+  }
+  return bytesToHex(hash.digest());
 }
 ```
 
-Use `@noble/hashes` (pure-JS, tree-shakeable) for streaming SHA-256 rather than `SubtleCrypto`, which requires the full buffer in memory.
+`@noble/hashes` is used instead of `SubtleCrypto` because `SubtleCrypto.digest()` requires the entire file buffer in memory. The sliced approach keeps peak memory at ~16 MB regardless of file size.
 
-### Per-chunk integrity
-Include `x-amz-checksum-sha256` header on each PUT to MinIO. MinIO validates the chunk hash immediately and rejects corrupted transit data before the chunk is stored.
+### Backend: ETag collection and why it matters
+
+MinIO stores each part independently until `CompleteMultipartUpload` is called. At that point MinIO needs the `(partNumber, ETag)` list to verify it received every part in order before assembling the final object. The frontend collects each ETag from the PUT response header and sends them all in the `complete` call.
+
+### Whole-file checksum verification
+
+After assembly, the backend calls `HeadObject` on the completed object to read the checksum MinIO computed. This is compared against the SHA-256 the client declared at `init`. A mismatch means the file was corrupted in transit:
+
+```
+stored checksum (from init) ≠ MinIO checksum (after complete)
+  → abortMultipartUpload
+  → File.status = DELETED
+  → 422 Unprocessable Entity
+```
+
+### Two S3 endpoints
+
+The backend maintains two MinIO connections:
+
+| Connection | Env var | Used for |
+|---|---|---|
+| Internal | `MINIO_ENDPOINT` | Backend-to-MinIO API calls (create, complete, head, delete) — uses Docker service name, e.g. `http://minio:9000` |
+| Public | `MINIO_PUBLIC_ENDPOINT` | Signing presigned URLs that the **browser** will call — must be a hostname the browser can reach, e.g. `http://localhost:9000` |
+
+If presigned URLs were signed with the internal hostname, the browser could not reach MinIO.
 
 ---
 
@@ -137,10 +180,14 @@ Retry on the rare DB unique constraint violation (expected frequency: negligible
 
 ## 7. `UploadSession` Lifecycle
 
-| Event | Action |
-|---|---|
-| `init-upload` | Create `UploadSession` with `s3UploadId` + `totalParts` |
-| `complete-upload` success | Delete `UploadSession` |
-| `complete-upload` checksum fail | Delete `UploadSession`, abort MinIO multipart, set `File.status = DELETED` |
-| User deletes file mid-upload | Abort MinIO multipart, cascade-delete `UploadSession` via Prisma |
-| Abandoned uploads (future) | Cron: find `File.status = PENDING AND createdAt < 24h ago`, abort + clean |
+`UploadSession` is a **temporary row** — it only exists while an upload is in progress. The table is normally nearly empty.
+
+| Event | DB | MinIO |
+|---|---|---|
+| `init-upload` | Create `File (PENDING)` + `UploadSession` | `CreateMultipartUpload` → `s3UploadId` |
+| `complete-upload` success | Delete `UploadSession`, `File → READY`, increment `usedStorage` | `CompleteMultipartUpload` |
+| `complete-upload` checksum mismatch | Delete `UploadSession`, `File → DELETED` | `AbortMultipartUpload` |
+| File deleted mid-upload | `File → DELETED`; `UploadSession` cascade-deleted via Prisma `onDelete: Cascade` | `AbortMultipartUpload` |
+| Abandoned uploads (future) | Cron: find `File.status = PENDING AND createdAt < 24h ago`, abort + clean | `AbortMultipartUpload` |
+
+The `onDelete: Cascade` on `UploadSession.fileId` means deleting the `File` row automatically deletes the session — no manual cleanup needed.

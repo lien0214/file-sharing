@@ -157,3 +157,4 @@ All detailed documentation lives in [doc/](doc/):
 - [API.md](doc/API.md) — Complete endpoint reference
 - [DATABASE.md](doc/DATABASE.md) — Prisma schema and design notes
 - [CORE-LOGIC.md](doc/CORE-LOGIC.md) — Chunked upload flow, expiry logic, password flow
+- [postman-collection.json](doc/fileshare.postman_collection.json) - Postman Collection for backend api tests
