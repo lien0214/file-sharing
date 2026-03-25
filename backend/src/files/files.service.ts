@@ -3,6 +3,7 @@ import {
   NotFoundException,
   GoneException,
   ForbiddenException,
+  BadRequestException,
   UnprocessableEntityException,
   Logger,
 } from '@nestjs/common';
@@ -41,6 +42,12 @@ export class FilesService {
    * Returns the File record, session, and presigned URL for part 1.
    */
   async initUpload(dto: InitUploadDto, user: User | null) {
+    if (!user && !dto.expiresAt) {
+      throw new BadRequestException(
+        'Anonymous uploads must have an expiry (expiresAt is required)',
+      );
+    }
+
     if (user) {
       const wouldExceed =
         BigInt(user.usedStorage) + BigInt(dto.size) > BigInt(user.storageLimit);
@@ -266,7 +273,7 @@ export class FilesService {
       }
     }
 
-    return this.storage.presignDownload(file.s3Key, 60);
+    return this.storage.presignDownload(file.s3Key, file.fileName, 60);
   }
 
   // ---------------------------------------------------------------------------

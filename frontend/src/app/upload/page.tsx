@@ -12,10 +12,11 @@
  * Works for both anonymous guests and authenticated users.
  */
 
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { uploadFile } from '@/lib/upload';
+import { isAuthenticated } from '@/lib/auth';
 
 type Step = 'select' | 'configure' | 'uploading' | 'done';
 
@@ -51,8 +52,16 @@ export default function UploadPage() {
   const [dragging, setDragging] = useState(false);
 
   // Config
-  const [permanent, setPermanent] = useState(true);
+  const [loggedIn, setLoggedIn] = useState(false);
+  const [permanent, setPermanent] = useState(false);
   const [ttlHours, setTtlHours] = useState(24);
+
+  // Resolve auth state client-side (localStorage is not available during SSR).
+  useEffect(() => {
+    const authed = isAuthenticated();
+    setLoggedIn(authed);
+    setPermanent(authed); // logged-in users default to permanent; guests to TTL
+  }, []);
   const [passwordEnabled, setPasswordEnabled] = useState(false);
   const [password, setPassword] = useState('');
 
@@ -194,40 +203,55 @@ export default function UploadPage() {
               {/* Storage type */}
               <div>
                 <label className="text-xs font-medium text-gray-400 mb-2 block">Storage</label>
-                <div className="flex gap-3">
-                  <label
-                    className={`flex-1 flex items-center gap-2 rounded-xl px-4 py-3 cursor-pointer text-sm ${
-                      permanent
-                        ? 'bg-indigo-950 border border-indigo-700 text-indigo-300'
-                        : 'bg-gray-800 border border-gray-700 text-gray-300'
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="storage"
-                      checked={permanent}
-                      onChange={() => setPermanent(true)}
-                      className="accent-indigo-500"
-                    />
-                    Permanent quota
-                  </label>
-                  <label
-                    className={`flex-1 flex items-center gap-2 rounded-xl px-4 py-3 cursor-pointer text-sm ${
-                      !permanent
-                        ? 'bg-indigo-950 border border-indigo-700 text-indigo-300'
-                        : 'bg-gray-800 border border-gray-700 text-gray-300'
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="storage"
-                      checked={!permanent}
-                      onChange={() => setPermanent(false)}
-                      className="accent-indigo-500"
-                    />
-                    Temporary (TTL)
-                  </label>
-                </div>
+                {loggedIn ? (
+                  <div className="flex gap-3">
+                    <label
+                      className={`flex-1 flex items-center gap-2 rounded-xl px-4 py-3 cursor-pointer text-sm ${
+                        permanent
+                          ? 'bg-indigo-950 border border-indigo-700 text-indigo-300'
+                          : 'bg-gray-800 border border-gray-700 text-gray-300'
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="storage"
+                        checked={permanent}
+                        onChange={() => setPermanent(true)}
+                        className="accent-indigo-500"
+                      />
+                      Permanent quota
+                    </label>
+                    <label
+                      className={`flex-1 flex items-center gap-2 rounded-xl px-4 py-3 cursor-pointer text-sm ${
+                        !permanent
+                          ? 'bg-indigo-950 border border-indigo-700 text-indigo-300'
+                          : 'bg-gray-800 border border-gray-700 text-gray-300'
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="storage"
+                        checked={!permanent}
+                        onChange={() => setPermanent(false)}
+                        className="accent-indigo-500"
+                      />
+                      Temporary (TTL)
+                    </label>
+                  </div>
+                ) : (
+                  <div className="flex flex-col gap-2">
+                    <div className="flex items-center gap-2 rounded-xl px-4 py-3 bg-indigo-950 border border-indigo-700 text-indigo-300 text-sm">
+                      <input type="radio" checked readOnly className="accent-indigo-500" />
+                      Temporary (TTL)
+                    </div>
+                    <p className="text-xs text-gray-500">
+                      <Link href="/login" className="text-indigo-400 hover:text-indigo-300 transition">
+                        Sign in
+                      </Link>{' '}
+                      for permanent storage with a 5 GB quota.
+                    </p>
+                  </div>
+                )}
               </div>
 
               {/* TTL selector */}

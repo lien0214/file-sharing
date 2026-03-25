@@ -11,6 +11,14 @@ import {
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
+function buildContentDisposition(fileName: string): string {
+  const ascii = fileName
+    .replace(/[^\x20-\x7E]/g, '_')
+    .replace(/[\\"/]/g, '_');
+  const encoded = encodeURIComponent(fileName);
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encoded}`;
+}
+
 export interface CompletedPart {
   PartNumber: number;
   ETag: string;
@@ -140,8 +148,14 @@ export class StorageService {
   /**
    * Generates a short-lived presigned GET URL for downloading an object.
    * URL uses the public endpoint so browsers can reach MinIO.
+   * Sets Content-Disposition: attachment so the browser saves the file
+   * instead of rendering it inline.
    */
-  async presignDownload(s3Key: string, expiresIn = 60): Promise<string> {
+  async presignDownload(
+    s3Key: string,
+    fileName: string,
+    expiresIn = 60,
+  ): Promise<string> {
     const publicClient = new S3Client({
       endpoint: this.publicEndpoint,
       region: 'us-east-1',
@@ -154,7 +168,11 @@ export class StorageService {
 
     return getSignedUrl(
       publicClient,
-      new GetObjectCommand({ Bucket: this.bucket, Key: s3Key }),
+      new GetObjectCommand({
+        Bucket: this.bucket,
+        Key: s3Key,
+        ResponseContentDisposition: buildContentDisposition(fileName),
+      }),
       { expiresIn },
     );
   }
