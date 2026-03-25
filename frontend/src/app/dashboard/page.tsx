@@ -137,20 +137,25 @@ export default function DashboardPage() {
   const router = useRouter();
   const qc = useQueryClient();
   const [editTarget, setEditTarget] = useState<FileRecord | null>(null);
+  const [deleteError, setDeleteError] = useState('');
 
   useEffect(() => {
     if (!isAuthenticated()) router.replace('/login');
   }, [router]);
 
   const { data: me } = useQuery({ queryKey: ['me'], queryFn: getMe });
-  const { data: files = [], isLoading } = useQuery({
+  const { data: files = [], isLoading, isError: isListError } = useQuery({
     queryKey: ['files'],
     queryFn: listFiles,
   });
 
   const { mutate: remove } = useMutation({
     mutationFn: deleteFile,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['files'] }),
+    onSuccess: () => {
+      setDeleteError('');
+      qc.invalidateQueries({ queryKey: ['files'] });
+    },
+    onError: () => setDeleteError('Failed to delete file. Please try again.'),
   });
 
   const usedPct = me
@@ -191,6 +196,18 @@ export default function DashboardPage() {
               />
             </div>
           </div>
+        )}
+
+        {/* Error banners */}
+        {isListError && (
+          <p className="text-sm text-red-400 bg-red-950 border border-red-800 rounded-xl px-4 py-3">
+            Failed to load files. Please refresh the page.
+          </p>
+        )}
+        {deleteError && (
+          <p className="text-sm text-red-400 bg-red-950 border border-red-800 rounded-xl px-4 py-3">
+            {deleteError}
+          </p>
         )}
 
         {/* File list */}

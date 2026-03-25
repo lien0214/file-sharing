@@ -6,6 +6,7 @@
  */
 
 import axios from 'axios';
+import { clearToken } from './auth';
 
 export const api = axios.create({
   baseURL: process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3000',
@@ -19,6 +20,35 @@ api.interceptors.request.use((config) => {
   }
   return config;
 });
+
+// Redirect to /login on 401, except for the auth endpoints themselves.
+api.interceptors.response.use(
+  (res) => res,
+  (err) => {
+    const url: string = err.config?.url ?? '';
+    const is401 = err.response?.status === 401;
+    const isAuthRoute = url.includes('/auth/login') || url.includes('/auth/register');
+    if (is401 && !isAuthRoute && typeof window !== 'undefined') {
+      clearToken();
+      window.location.href = '/login';
+    }
+    return Promise.reject(err);
+  },
+);
+
+/**
+ * Extracts a human-readable message from an Axios error.
+ * Falls back to a generic message if the backend didn't send one.
+ */
+export function getErrorMessage(err: unknown, fallback = 'Something went wrong.'): string {
+  if (axios.isAxiosError(err)) {
+    if (!err.response) return 'Network error. Please check your connection.';
+    const msg = err.response.data?.message;
+    if (typeof msg === 'string') return msg;
+    if (Array.isArray(msg)) return msg[0]; // class-validator sends array on 400
+  }
+  return fallback;
+}
 
 // ── Auth ─────────────────────────────────────────────────────────────────────
 

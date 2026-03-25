@@ -10,7 +10,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { login } from '@/lib/api';
+import { login, getErrorMessage } from '@/lib/api';
 import { isAuthenticated, setToken } from '@/lib/auth';
 
 export default function LoginPage() {
@@ -32,8 +32,8 @@ export default function LoginPage() {
       const { accessToken } = await login(email, password);
       setToken(accessToken);
       router.push('/dashboard');
-    } catch {
-      setError('Invalid email or password.');
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, 'Invalid email or password.'));
     } finally {
       setLoading(false);
     }

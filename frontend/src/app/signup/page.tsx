@@ -9,7 +9,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { register } from '@/lib/api';
+import { register, getErrorMessage } from '@/lib/api';
 import { isAuthenticated, setToken } from '@/lib/auth';
 
 export default function SignupPage() {
@@ -37,9 +37,7 @@ export default function SignupPage() {
       setToken(accessToken);
       router.push('/dashboard');
     } catch (err: unknown) {
-      const msg =
-        err instanceof Error ? err.message : 'Registration failed.';
-      setError(msg);
+      setError(getErrorMessage(err, 'Registration failed.'));
     } finally {
       setLoading(false);
     }
