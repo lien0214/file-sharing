@@ -1,0 +1,245 @@
+{
+  "info": {
+    "name": "FileShare API",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:3000" },
+    { "key": "token", "value": "" },
+    { "key": "fileId", "value": "" },
+    { "key": "slug", "value": "" },
+    { "key": "accessToken", "value": "" },
+    { "key": "presignedUrl", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Register",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/auth/register",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"user@example.com\",\n  \"password\": \"yourpassword\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var res = pm.response.json();",
+                  "if (res.accessToken) {",
+                  "  pm.collectionVariables.set('token', res.accessToken);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/auth/login",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"user@example.com\",\n  \"password\": \"yourpassword\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Get Me",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/auth/me",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Upload Pipeline",
+      "item": [
+        {
+          "name": "1. Init Upload",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var res = pm.response.json();",
+                  "if (res.fileId) pm.collectionVariables.set('fileId', res.fileId);",
+                  "if (res.slug)   pm.collectionVariables.set('slug', res.slug);",
+                  "if (res.presignedUrl) pm.collectionVariables.set('presignedUrl', res.presignedUrl);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/files/upload/init",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"fileName\": \"video.mp4\",\n  \"size\": 20971520,\n  \"mimeType\": \"video/mp4\",\n  \"checksum\": \"<sha256-hex>\",\n  \"expiresAt\": \"2026-06-01T00:00:00Z\",\n  \"password\": \"optional-password\"\n}"
+            }
+          }
+        },
+        {
+          "name": "2. Get Presigned URL (part N)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var res = pm.response.json();",
+                  "if (res.presignedUrl) pm.collectionVariables.set('presignedUrl', res.presignedUrl);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/files/upload/{{fileId}}/presign/1",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          }
+        },
+        {
+          "name": "3. PUT Chunk to MinIO (presigned)",
+          "request": {
+            "method": "PUT",
+            "url": "{{presignedUrl}}",
+            "header": [{ "key": "Content-Type", "value": "application/octet-stream" }],
+            "body": {
+              "mode": "file",
+              "file": { "src": "" }
+            },
+            "description": "Upload binary chunk directly to MinIO. Save the ETag from the response header into the 'parts' array for step 4."
+          }
+        },
+        {
+          "name": "4. Complete Upload",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/files/upload/{{fileId}}/complete",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"parts\": [\n    { \"partNumber\": 1, \"etag\": \"\\\"abc123\\\"\" },\n    { \"partNumber\": 2, \"etag\": \"\\\"def456\\\"\" }\n  ]\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "File Access (public)",
+      "item": [
+        {
+          "name": "Get File Metadata",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/files/{{slug}}"
+          }
+        },
+        {
+          "name": "Unlock Password-Protected File",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var res = pm.response.json();",
+                  "if (res.accessToken) pm.collectionVariables.set('accessToken', res.accessToken);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/files/{{slug}}/access",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"password\": \"secret\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Download File",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/files/{{slug}}/download?accessToken={{accessToken}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["files", "{{slug}}", "download"],
+              "query": [{ "key": "accessToken", "value": "{{accessToken}}", "description": "Only needed for password-protected files" }]
+            },
+            "description": "Redirects (302) to a short-lived MinIO presigned GET URL."
+          }
+        }
+      ]
+    },
+    {
+      "name": "File Management (auth required)",
+      "item": [
+        {
+          "name": "List My Files",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/files",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          }
+        },
+        {
+          "name": "Update File (password + expiry)",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/files/{{fileId}}",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"password\": \"newpassword\",\n  \"expiresAt\": \"2026-07-01T00:00:00Z\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Remove Password",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/files/{{fileId}}",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"password\": null\n}"
+            }
+          }
+        },
+        {
+          "name": "Delete File",
+          "request": {
+            "method": "DELETE",
+            "url": "{{baseUrl}}/files/{{fileId}}",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          }
+        }
+      ]
+    }
+  ]
+}

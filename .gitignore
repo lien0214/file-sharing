@@ -1,0 +1,8 @@
+.env
+node_modules/
+dist/
+.prisma/
+*.log
+.DS_Store
+.claude
+assets

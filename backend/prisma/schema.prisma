@@ -1,0 +1,56 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String
+  storageLimit BigInt   @default(5368709120) // 5 GB
+  usedStorage  BigInt   @default(0)
+  files        File[]
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model File {
+  id            String         @id @default(uuid())
+  slug          String         @unique // NanoID, alphanumeric, 12 chars
+  fileName      String
+  s3Key         String // Object path in MinIO bucket
+  size          BigInt
+  mimeType      String
+  checksum      String // SHA-256, provided by client before upload
+  passwordHash  String? // Argon2, optional file-level password
+  isAnonymous   Boolean        @default(true)
+  status        FileStatus     @default(PENDING)
+  expiresAt     DateTime? // null = never expires
+  viewCount     Int            @default(0)
+  ownerId       String?
+  owner         User?          @relation(fields: [ownerId], references: [id])
+  uploadSession UploadSession?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+}
+
+/// Tracks an in-progress S3 multipart upload.
+/// Deleted once the upload is completed or aborted.
+model UploadSession {
+  id         String   @id @default(uuid())
+  fileId     String   @unique
+  file       File     @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  s3UploadId String // MinIO multipart uploadId
+  totalParts Int // Expected total number of 16MB parts
+  createdAt  DateTime @default(now())
+}
+
+enum FileStatus {
+  PENDING // Multipart upload in progress
+  READY // Upload verified; file is publicly accessible
+  DELETED // Soft-deleted; object removed from MinIO
+}

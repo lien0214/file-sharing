@@ -1,0 +1,21 @@
+{
+  "name": "piccollage-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently -n backend,frontend -c blue,green \"npm --prefix backend run start:dev\" \"npm --prefix frontend run dev\"",
+    "dev:backend": "npm --prefix backend run start:dev",
+    "dev:frontend": "npm --prefix frontend run dev",
+    "build": "npm --prefix backend run build && npm --prefix frontend run build",
+    "lint": "npm --prefix backend run lint && npm --prefix frontend run lint",
+    "test": "npm --prefix backend run test",
+    "db:generate": "npm --prefix backend run db:generate",
+    "db:migrate": "npm --prefix backend run db:migrate",
+    "db:studio": "npm --prefix backend run db:studio",
+    "compose:up": "docker compose up --build",
+    "compose:down": "docker compose down"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.1"
+  }
+}
