@@ -7,7 +7,7 @@
 - **Account Page:** As a logged-in user, I want to view my storage quota usage and manage my account settings.
 
 ## 2. File Sharing & Link Logic
-- **Anonymous Creation (Guest):** As a guest user, I want to upload a file and set a **TTL (Time-to-Live)** so that the file automatically expires after it is no longer needed.
+- **Anonymous Creation (Guest):** As a guest user, I want to upload a file and set a **TTL (Time-to-Live)** so that the file automatically expires after it is no longer needed. TTL is **mandatory** for anonymous uploads — permanent storage requires an account.
 - **Authenticated Creation (User):** As a logged-in user, I want to upload files to my **Permanent Quota** or optionally set a TTL for temporary shares.
 - **Secure Links (Obfuscation):** As a creator, I want the system to generate a non-sequential, hard-to-guess URL (NanoID, 12 chars) so that unauthorized users cannot scan or brute-force my files.
 - **Privacy (Password Protection):** As a creator, I want the option to add a password to my file link so that only recipients with the password can view or download the content.

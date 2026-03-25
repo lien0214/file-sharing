@@ -39,6 +39,7 @@ DATABASE_URL=postgresql://postgres:secret@localhost:5432/fileshare
 MINIO_ROOT_USER=minioadmin
 MINIO_ROOT_PASSWORD=minioadmin
 MINIO_ENDPOINT=http://localhost:9000
+MINIO_PUBLIC_ENDPOINT=http://localhost:9000
 MINIO_BUCKET=files
 
 JWT_SECRET=changeme

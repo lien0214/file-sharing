@@ -22,10 +22,10 @@
 
 | Layer | Technology | Notes |
 |---|---|---|
-| Framework | Next.js (App Router) | React 18, SSR/SSG |
+| Framework | Next.js 16 (App Router) | React 19, SSR/SSG |
 | Language | TypeScript | |
-| Styling | Tailwind CSS | |
-| HTTP Client | `axios` or `fetch` | |
+| Styling | Tailwind CSS v4 | |
+| HTTP Client | `axios` | |
 | Checksum | `@noble/hashes` | Streaming SHA-256, no OOM risk |
 | State | React Query (`@tanstack/react-query`) | Server state, caching |
 

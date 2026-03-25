@@ -89,13 +89,26 @@ Recipient:
     └─ NestJS: argon2.verify(File.passwordHash, "secret")
        ├─ fail → 403 (no info about file existence)
        └─ pass → return short-lived accessToken (signed JWT, exp: 5min)
-  GET /files/:slug/download?token=<accessToken>
-    └─ NestJS: verify accessToken → issue presigned MinIO GET URL → 302
+  GET /files/:slug/download?accessToken=<accessToken>
+    └─ NestJS: verify accessToken → issue presigned MinIO GET URL (Content-Disposition: attachment) → 302
 ```
 
 ---
 
-## 4. Quota Enforcement
+## 4. Anonymous Upload Constraint
+
+Anonymous uploads (no JWT) **must** include `expiresAt`. Permanent storage is a privilege for authenticated users only.
+
+```
+POST /files/upload/init (no token)
+  └─ if expiresAt missing → 400 Bad Request
+```
+
+The frontend enforces this in the UI: the "Permanent quota" storage option is hidden for guests, who are forced to pick a TTL. The backend enforces it independently as a safety net.
+
+---
+
+## 5. Quota Enforcement
 
 Checked in `POST /files/upload/init` for authenticated users only:
 
@@ -109,7 +122,7 @@ if (user.usedStorage + dto.size > user.storageLimit) {
 
 ---
 
-## 5. Slug Generation
+## 6. Slug Generation
 
 ```typescript
 import { nanoid } from 'nanoid';
@@ -122,7 +135,7 @@ Retry on the rare DB unique constraint violation (expected frequency: negligible
 
 ---
 
-## 6. `UploadSession` Lifecycle
+## 7. `UploadSession` Lifecycle
 
 | Event | Action |
 |---|---|

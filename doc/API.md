@@ -91,13 +91,14 @@ Initiates a new multipart upload. Creates `File` (status=PENDING) and `UploadSes
   "size": 1073741824,
   "mimeType": "video/mp4",
   "checksum": "<sha256-hex>",
-  "expiresAt": "2026-04-01T00:00:00Z",  // optional
+  "expiresAt": "2026-04-01T00:00:00Z",  // required for anonymous; optional for authenticated
   "password": "secret"                   // optional, plaintext — hashed server-side
 }
 ```
 
 **Logic**
-1. If authenticated: enforce quota (`usedStorage + size <= storageLimit`).
+1. If anonymous (no token): require `expiresAt` — returns `400` if missing.
+2. If authenticated: enforce quota (`usedStorage + size <= storageLimit`).
 2. Generate `slug` (NanoID 12).
 3. Generate `s3Key` (e.g. `uploads/<uuid>`).
 4. Call MinIO `CreateMultipartUpload` → receive `s3UploadId`.
@@ -147,8 +148,8 @@ Finalizes the multipart upload. Verifies checksum, updates `File.status` to `REA
 1. Call MinIO `CompleteMultipartUpload` with ETags.
 2. Retrieve object checksum from MinIO (`x-amz-checksum-sha256`).
 3. Compare with `File.checksum` stored in DB.
-4. If mismatch: abort, delete object, set `status = DELETED`, return 422.
-5. If match: set `status = READY`, increment `owner.usedStorage`, delete `UploadSession`.
+4. If mismatch: abort, delete object, set `status = DELETED`, return `422`.
+5. If match: set `status = READY`, increment `owner.usedStorage` (authenticated only), delete `UploadSession`.
 
 **Response** `200`
 ```json
@@ -200,9 +201,9 @@ Verifies the file password. Returns a short-lived access token on success.
 ---
 
 ### `GET /files/:slug/download`
-Issues a short-lived (e.g. 60s) presigned MinIO GET URL and redirects the client.
+Issues a short-lived (60s) presigned MinIO GET URL and redirects the client. The presigned URL includes `Content-Disposition: attachment; filename="..."` so the browser triggers a save dialog instead of rendering the file inline.
 
-**Auth:** If password-protected, requires `accessToken` from `/access` as query param or header.
+**Auth:** If password-protected, requires `accessToken` from `/access` as `?accessToken=` query param or `Authorization: Bearer` header.
 
 **Response** `302 Found` → MinIO presigned URL
 
