@@ -43,6 +43,7 @@ export class FilesService {
    */
   async initUpload(dto: InitUploadDto, user: User | null) {
     if (!user && !dto.expiresAt) {
+      this.logger.warn(`Anonymous upload rejected — missing expiresAt for "${dto.fileName}"`);
       throw new BadRequestException(
         'Anonymous uploads must have an expiry (expiresAt is required)',
       );
@@ -52,6 +53,7 @@ export class FilesService {
       const wouldExceed =
         BigInt(user.usedStorage) + BigInt(dto.size) > BigInt(user.storageLimit);
       if (wouldExceed) {
+        this.logger.warn(`Quota exceeded for user ${user.id} — tried to upload ${dto.size} bytes`);
         throw new ForbiddenException('Storage quota exceeded');
       }
     }
@@ -96,6 +98,10 @@ export class FilesService {
     });
 
     const presignedUrl = await this.storage.presignPart(s3Key, s3UploadId, 1);
+
+    this.logger.log(
+      `Upload init: "${dto.fileName}" (${dto.size} bytes, ${totalParts} parts) slug=${file.slug} owner=${user?.id ?? 'anonymous'}`,
+    );
 
     return {
       fileId: file.id,
@@ -179,6 +185,7 @@ export class FilesService {
       }
     });
 
+    this.logger.log(`Upload complete: slug=${file.slug} file=${fileId}`);
     return { slug: file.slug, url: `/f/${file.slug}` };
   }
 
@@ -198,6 +205,7 @@ export class FilesService {
     }
 
     if (file.expiresAt && file.expiresAt < new Date()) {
+      this.logger.log(`File expired on access: slug=${slug}`);
       await this.expireFile(file);
       throw new GoneException('File has expired');
     }
@@ -227,7 +235,10 @@ export class FilesService {
     }
 
     const valid = await argon2.verify(file.passwordHash, password);
-    if (!valid) throw GENERIC_ERROR;
+    if (!valid) {
+      this.logger.warn(`Wrong password attempt for slug=${slug}`);
+      throw GENERIC_ERROR;
+    }
 
     const accessToken = this.jwt.sign(
       { sub: file.id, slug: file.slug, type: 'file-access' },
@@ -273,6 +284,7 @@ export class FilesService {
       }
     }
 
+    this.logger.log(`Download issued: slug=${slug} file="${file.fileName}"`);
     return this.storage.presignDownload(file.s3Key, file.fileName, 60);
   }
 
@@ -327,6 +339,7 @@ export class FilesService {
    */
   async deleteFile(fileId: string, userId: string): Promise<void> {
     const file = await this.findOwnedFile(fileId, userId);
+    this.logger.log(`File deleted: slug=${file.slug} file=${fileId} owner=${userId}`);
 
     await this.storage.deleteObject(file.s3Key);
 

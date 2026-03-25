@@ -1,6 +1,7 @@
 import { NestFactory } from '@nestjs/core';
-import { ValidationPipe } from '@nestjs/common';
+import { ValidationPipe, Logger } from '@nestjs/common';
 import { AppModule } from './app.module';
+import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
 
 // Prisma returns BigInt for storage fields; patch JSON serialization globally.
 (BigInt.prototype as any).toJSON = function () {
@@ -18,11 +19,13 @@ async function bootstrap() {
     }),
   );
 
+  app.useGlobalInterceptors(new LoggingInterceptor());
+
   app.enableCors();
 
   const port = process.env.PORT ?? 3000;
   await app.listen(port);
-  console.log(`API running on http://localhost:${port}`);
+  new Logger('Bootstrap').log(`API running on http://localhost:${port}`);
 }
 
 bootstrap();

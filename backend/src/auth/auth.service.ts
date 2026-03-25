@@ -2,6 +2,7 @@ import {
   Injectable,
   ConflictException,
   UnauthorizedException,
+  Logger,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import * as argon2 from 'argon2';
@@ -11,6 +12,8 @@ import { LoginDto } from './dto/login.dto';
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwt: JwtService,
@@ -21,13 +24,17 @@ export class AuthService {
     const existing = await this.prisma.user.findUnique({
       where: { email: dto.email },
     });
-    if (existing) throw new ConflictException('Email already in use');
+    if (existing) {
+      this.logger.warn(`Register failed — email already in use: ${dto.email}`);
+      throw new ConflictException('Email already in use');
+    }
 
     const passwordHash = await argon2.hash(dto.password);
     const user = await this.prisma.user.create({
       data: { email: dto.email, passwordHash },
     });
 
+    this.logger.log(`New user registered: ${user.email} (${user.id})`);
     return { accessToken: this.signUserToken(user.id, user.email) };
   }
 
@@ -36,11 +43,18 @@ export class AuthService {
     const user = await this.prisma.user.findUnique({
       where: { email: dto.email },
     });
-    if (!user) throw new UnauthorizedException('Invalid credentials');
+    if (!user) {
+      this.logger.warn(`Login failed — unknown email: ${dto.email}`);
+      throw new UnauthorizedException('Invalid credentials');
+    }
 
     const valid = await argon2.verify(user.passwordHash, dto.password);
-    if (!valid) throw new UnauthorizedException('Invalid credentials');
+    if (!valid) {
+      this.logger.warn(`Login failed — wrong password for: ${dto.email}`);
+      throw new UnauthorizedException('Invalid credentials');
+    }
 
+    this.logger.log(`User logged in: ${user.email} (${user.id})`);
     return { accessToken: this.signUserToken(user.id, user.email) };
   }
 
