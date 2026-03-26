@@ -7,6 +7,7 @@ import {
   UnprocessableEntityException,
   Logger,
 } from '@nestjs/common';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import { JwtService } from '@nestjs/jwt';
 import { FileStatus, User } from '@prisma/client';
 import * as argon2 from 'argon2';
@@ -298,6 +299,7 @@ export class FilesService {
       where: {
         ownerId: userId,
         status: { in: ['READY', 'PENDING'] },
+        OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
       },
       orderBy: { createdAt: 'desc' },
     });
@@ -358,6 +360,29 @@ export class FilesService {
   }
 
   // ---------------------------------------------------------------------------
+  // Background cleanup
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Hourly cron: cleans up expired files that were never accessed.
+   * Processes up to 500 per run to bound memory usage.
+   */
+  @Cron(CronExpression.EVERY_HOUR)
+  async sweepExpiredFiles(): Promise<void> {
+    const expired = await this.prisma.file.findMany({
+      where: { status: 'READY', expiresAt: { lt: new Date() } },
+      take: 500,
+    });
+
+    if (expired.length === 0) return;
+    this.logger.log(`Sweeping ${expired.length} expired file(s)`);
+
+    for (const file of expired) {
+      await this.expireFile(file);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Private helpers
   // ---------------------------------------------------------------------------
 
@@ -386,11 +411,11 @@ export class FilesService {
     }
 
     await this.prisma.$transaction(async (tx) => {
-      await tx.file.update({
-        where: { id: file.id },
+      const { count } = await tx.file.updateMany({
+        where: { id: file.id, status: 'READY' },
         data: { status: 'DELETED' },
       });
-      if (file.ownerId) {
+      if (count > 0 && file.ownerId) {
         await tx.user.update({
           where: { id: file.ownerId },
           data: { usedStorage: { decrement: file.size } },

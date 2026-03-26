@@ -53,6 +53,7 @@ const mockPrisma = {
     findMany: jest.fn(),
     create: jest.fn(),
     update: jest.fn(),
+    updateMany: jest.fn(),
   },
   uploadSession: {
     findUnique: jest.fn(),
@@ -184,7 +185,10 @@ describe('FilesService', () => {
       mockPrisma.file.findUnique.mockResolvedValue(expiredFile);
       mockStorage.deleteObject.mockResolvedValue(undefined);
       mockPrisma.$transaction.mockImplementation((cb: (tx: any) => Promise<void>) =>
-        cb({ file: { update: jest.fn() }, user: { update: jest.fn() } }),
+        cb({
+          file: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+          user: { update: jest.fn() },
+        }),
       );
 
       await expect(service.getBySlug('testSlug1234')).rejects.toThrow(
@@ -248,6 +252,75 @@ describe('FilesService', () => {
       const result = await service.verifyAccess('testSlug1234', 'correct');
 
       expect(result).toEqual({ accessToken: 'signed-token' });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // listByOwner
+  // ---------------------------------------------------------------------------
+
+  describe('listByOwner', () => {
+    it('queries with an expiry filter so expired files are excluded', async () => {
+      mockPrisma.file.findMany.mockResolvedValue([makeFile()]);
+
+      await service.listByOwner('user-id');
+
+      expect(mockPrisma.file.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            OR: [{ expiresAt: null }, { expiresAt: { gt: expect.any(Date) } }],
+          }),
+        }),
+      );
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // sweepExpiredFiles
+  // ---------------------------------------------------------------------------
+
+  describe('sweepExpiredFiles', () => {
+    it('does nothing when no expired files exist', async () => {
+      mockPrisma.file.findMany.mockResolvedValue([]);
+
+      await service.sweepExpiredFiles();
+
+      expect(mockStorage.deleteObject).not.toHaveBeenCalled();
+      expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('cleans up each expired file found', async () => {
+      const expiredFile = makeFile({ expiresAt: new Date(Date.now() - 1000) });
+      mockPrisma.file.findMany.mockResolvedValue([expiredFile]);
+      mockStorage.deleteObject.mockResolvedValue(undefined);
+      mockPrisma.$transaction.mockImplementation((cb: (tx: any) => Promise<void>) =>
+        cb({
+          file: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+          user: { update: jest.fn() },
+        }),
+      );
+
+      await service.sweepExpiredFiles();
+
+      expect(mockStorage.deleteObject).toHaveBeenCalledWith(expiredFile.s3Key);
+      expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not decrement quota when file was already deleted (count=0)', async () => {
+      const expiredFile = makeFile({ expiresAt: new Date(Date.now() - 1000) });
+      mockPrisma.file.findMany.mockResolvedValue([expiredFile]);
+      mockStorage.deleteObject.mockResolvedValue(undefined);
+      const txUserUpdate = jest.fn();
+      mockPrisma.$transaction.mockImplementation((cb: (tx: any) => Promise<void>) =>
+        cb({
+          file: { updateMany: jest.fn().mockResolvedValue({ count: 0 }) },
+          user: { update: txUserUpdate },
+        }),
+      );
+
+      await service.sweepExpiredFiles();
+
+      expect(txUserUpdate).not.toHaveBeenCalled();
     });
   });
 
