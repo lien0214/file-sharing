@@ -191,3 +191,163 @@ Retry on the rare DB unique constraint violation (expected frequency: negligible
 | Abandoned uploads (future) | Cron: find `File.status = PENDING AND createdAt < 24h ago`, abort + clean | `AbortMultipartUpload` |
 
 The `onDelete: Cascade` on `UploadSession.fileId` means deleting the `File` row automatically deletes the session — no manual cleanup needed.
+
+## 8. File Expiry
+
+Expiry is enforced through three complementary layers: lazy cleanup on access,
+a background sweep for files that are never accessed again, and a reconciliation
+job that retries S3 deletions that previously failed.
+
+### State model
+
+A `File` row uses two fields to represent its cleanup state:
+
+| `status`  | `s3Key`    | Meaning                                      |
+|-----------|------------|----------------------------------------------|
+| `READY`   | non-null   | Live file, accessible by slug                |
+| `READY`   | non-null   | Expired but not yet cleaned up (expiresAt < now) |
+| `DELETED` | `null`     | Fully cleaned: DB soft-deleted, S3 object gone |
+| `DELETED` | non-null   | Orphan: DB soft-deleted but S3 deletion failed — pending reconciliation |
+
+---
+
+### Layer 1 — Lazy expiry (on access)
+
+Triggered by `GET /files/:slug` (metadata) or `GET /files/:slug/download`.
+
+```
+Client request
+    │
+    ▼
+findUnique(slug)
+    │
+    ├─ not found or status ≠ READY → 404 Not Found
+    │
+    ├─ expiresAt < NOW()
+    │       │
+    │       ▼
+    │   expireFile()           ← see cleanup flow below
+    │       │
+    │       └──→ 410 Gone
+    │
+    └─ valid → return metadata / presigned download URL
+```
+
+**Why lazy?** No background job is needed for files that are still being accessed;
+the cleanup happens inline and the caller gets a clean 410 immediately.
+
+---
+
+### Layer 2 — Hourly sweep (`sweepExpiredFiles`)
+
+Runs every hour via `@Cron`. Catches files that expired but were never accessed
+again (so lazy expiry never fired).
+
+```
+Every hour
+    │
+    ▼
+findMany({ status: READY, expiresAt < NOW() }, take: 500)
+    │
+    └─ for each file → expireFile()
+```
+
+Processes up to 500 per run to bound memory. If more than 500 are expired,
+subsequent runs will catch the remainder.
+
+---
+
+### Layer 3 — Daily reconciliation (`reconcileOrphanedObjects`)
+
+Runs at 3 AM via `@Cron`. Retries S3 deletion for rows where `expireFile` (or
+`deleteFile`) ran but the S3 `deleteObject` call failed, leaving `s3Key` set on
+a `DELETED` row.
+
+```
+Every day at 3 AM
+    │
+    ▼
+findMany({ status: DELETED, s3Key: { not: null } }, take: 1000)
+    │
+    └─ for each orphan
+            │
+            ├─ deleteObject(s3Key)  ← idempotent; safe even if object is already gone
+            │       │
+            │       ├─ success → file.update({ s3Key: null })
+            │       │
+            │       └─ failure → log warning, continue (retry next day)
+```
+
+`DeleteObject` is idempotent per the S3 spec — it returns success even if the
+object no longer exists, so there is no risk of double-error.
+
+---
+
+### `expireFile` — shared cleanup helper
+
+Used by both lazy expiry and the hourly sweep.
+
+```
+expireFile(file)
+    │
+    ├─ file.s3Key === null → skip S3 call (already clean)
+    │
+    ├─ deleteObject(s3Key)
+    │       ├─ success → s3Deleted = true
+    │       └─ failure → log warning, s3Deleted = false
+    │                     (s3Key stays set → reconciliation will retry)
+    │
+    └─ $transaction (atomic)
+            │
+            ├─ updateMany({ id, status: READY } → { status: DELETED, s3Key: null? })
+            │       ├─ count = 1 → row was READY, we own this cleanup
+            │       │       └─ if ownerId → decrement usedStorage
+            │       └─ count = 0 → another concurrent call already cleaned it
+            │                       skip quota decrement (idempotency guard)
+            │
+            └─ s3Key set to null only when s3Deleted = true
+```
+
+The `updateMany` with `where: { status: READY }` acts as a compare-and-swap:
+only one concurrent caller will see `count = 1` and decrement the quota.
+This prevents double-decrement under concurrent access.
+
+---
+
+### `listByOwner` — expired file filtering
+
+`GET /files` for authenticated users filters out expired files at the DB query
+level so they do not appear in the list even if not yet cleaned up:
+
+```sql
+WHERE status IN ('READY', 'PENDING')
+  AND (expiresAt IS NULL OR expiresAt > NOW())
+```
+
+---
+
+### `deleteFile` — user-initiated deletion
+
+Owner-triggered deletes follow the same S3-then-DB pattern:
+
+```
+deleteObject(s3Key)   ← throws on failure (caller gets 5xx, file stays READY)
+    │
+    ▼
+$transaction
+    ├─ file.update({ status: DELETED, s3Key: null })
+    └─ if status was READY → decrement usedStorage
+```
+
+Unlike expiry, a failed `deleteObject` here is not swallowed — the transaction
+is never reached, so the file stays `READY` and the user can retry.
+
+---
+
+### Schedule summary
+
+| Job                        | Trigger          | Scope                            |
+|----------------------------|------------------|----------------------------------|
+| Lazy expiry                | On access        | Single file, inline              |
+| `sweepExpiredFiles`        | Every hour       | Up to 500 expired READY files    |
+| `reconcileOrphanedObjects` | Daily at 3 AM    | Up to 1000 DELETED orphaned keys |

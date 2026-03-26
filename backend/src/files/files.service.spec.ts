@@ -289,21 +289,39 @@ describe('FilesService', () => {
       expect(mockPrisma.$transaction).not.toHaveBeenCalled();
     });
 
-    it('cleans up each expired file found', async () => {
+    it('nulls s3Key in the update when S3 deletion succeeds', async () => {
       const expiredFile = makeFile({ expiresAt: new Date(Date.now() - 1000) });
       mockPrisma.file.findMany.mockResolvedValue([expiredFile]);
       mockStorage.deleteObject.mockResolvedValue(undefined);
+      const txUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
       mockPrisma.$transaction.mockImplementation((cb: (tx: any) => Promise<void>) =>
-        cb({
-          file: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
-          user: { update: jest.fn() },
-        }),
+        cb({ file: { updateMany: txUpdateMany }, user: { update: jest.fn() } }),
       );
 
       await service.sweepExpiredFiles();
 
-      expect(mockStorage.deleteObject).toHaveBeenCalledWith(expiredFile.s3Key);
-      expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1);
+      expect(txUpdateMany).toHaveBeenCalledWith(
+        expect.objectContaining({ data: { status: 'DELETED', s3Key: null } }),
+      );
+    });
+
+    it('does not set s3Key null when S3 deletion fails', async () => {
+      const expiredFile = makeFile({ expiresAt: new Date(Date.now() - 1000) });
+      mockPrisma.file.findMany.mockResolvedValue([expiredFile]);
+      mockStorage.deleteObject.mockRejectedValue(new Error('MinIO down'));
+      const txUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+      mockPrisma.$transaction.mockImplementation((cb: (tx: any) => Promise<void>) =>
+        cb({ file: { updateMany: txUpdateMany }, user: { update: jest.fn() } }),
+      );
+
+      await service.sweepExpiredFiles();
+
+      expect(txUpdateMany).toHaveBeenCalledWith(
+        expect.objectContaining({ data: { status: 'DELETED' } }),
+      );
+      expect(txUpdateMany).not.toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ s3Key: null }) }),
+      );
     });
 
     it('does not decrement quota when file was already deleted (count=0)', async () => {
@@ -321,6 +339,50 @@ describe('FilesService', () => {
       await service.sweepExpiredFiles();
 
       expect(txUserUpdate).not.toHaveBeenCalled();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // reconcileOrphanedObjects
+  // ---------------------------------------------------------------------------
+
+  describe('reconcileOrphanedObjects', () => {
+    it('does nothing when no orphaned objects exist', async () => {
+      mockPrisma.file.findMany.mockResolvedValue([]);
+
+      await service.reconcileOrphanedObjects();
+
+      expect(mockStorage.deleteObject).not.toHaveBeenCalled();
+    });
+
+    it('purges each orphaned S3 object and nulls the s3Key', async () => {
+      const orphan = makeFile({ status: 'DELETED', s3Key: 'uploads/orphan-key' });
+      mockPrisma.file.findMany.mockResolvedValue([orphan]);
+      mockStorage.deleteObject.mockResolvedValue(undefined);
+      mockPrisma.file.update.mockResolvedValue({ ...orphan, s3Key: null });
+
+      await service.reconcileOrphanedObjects();
+
+      expect(mockStorage.deleteObject).toHaveBeenCalledWith('uploads/orphan-key');
+      expect(mockPrisma.file.update).toHaveBeenCalledWith({
+        where: { id: orphan.id },
+        data: { s3Key: null },
+      });
+    });
+
+    it('continues with remaining files when one S3 deletion fails', async () => {
+      const orphan1 = makeFile({ id: 'file-1', s3Key: 'uploads/key-1', status: 'DELETED' });
+      const orphan2 = makeFile({ id: 'file-2', s3Key: 'uploads/key-2', status: 'DELETED' });
+      mockPrisma.file.findMany.mockResolvedValue([orphan1, orphan2]);
+      mockStorage.deleteObject
+        .mockRejectedValueOnce(new Error('MinIO unavailable'))
+        .mockResolvedValueOnce(undefined);
+      mockPrisma.file.update.mockResolvedValue(undefined);
+
+      await service.reconcileOrphanedObjects();
+
+      expect(mockStorage.deleteObject).toHaveBeenCalledTimes(2);
+      expect(mockPrisma.file.update).toHaveBeenCalledTimes(1);
     });
   });
 

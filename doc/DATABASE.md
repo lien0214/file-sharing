@@ -22,7 +22,7 @@ model File {
   id            String         @id @default(uuid())
   slug          String         @unique          // NanoID, alphanumeric, 12 chars
   fileName      String
-  s3Key         String                          // Object path in MinIO bucket
+  s3Key         String?                         // Object path in MinIO bucket; null once S3 object is confirmed deleted
   size          BigInt
   mimeType      String
   checksum      String                          // SHA-256, provided by client before upload
@@ -52,7 +52,7 @@ model UploadSession {
 enum FileStatus {
   PENDING   // Multipart upload in progress
   READY     // Upload verified; file is publicly accessible
-  DELETED   // Soft-deleted; object removed from MinIO
+  DELETED   // Soft-deleted; s3Key is null once the MinIO object is confirmed deleted
 }
 ```
 
@@ -72,16 +72,12 @@ The multipart `s3UploadId` is only needed during the upload window. Separating i
   ```
   Anonymous files skip this check.
 
-### Lazy Expiry (no cron job)
-When `GET /files/:slug` is called:
-1. Fetch the `File` record.
-2. If `expiresAt` is set and `expiresAt < NOW()`:
-   - Delete the object from MinIO.
-   - Set `status = DELETED`.
-   - Decrement `owner.usedStorage` if applicable.
-3. Return 410 Gone to the client.
+### File Expiry
+Expiry is enforced through three layers — see [CORE_LOGIC.md](CORE_LOGIC.md) for the full flow.
 
-This avoids any background job while still respecting TTLs.
+- **Lazy** — checked inline on `GET /files/:slug` and `GET /files/:slug/download`; returns 410 Gone.
+- **Hourly sweep** — `sweepExpiredFiles` cron catches files that expired but were never accessed.
+- **Daily reconciliation** — `reconcileOrphanedObjects` retries S3 deletions that previously failed (identified by `status = DELETED AND s3Key IS NOT NULL`).
 
 ### Slug
 - Library: `nanoid`

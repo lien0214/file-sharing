@@ -126,7 +126,7 @@ export class FilesService {
     if (!session) throw new NotFoundException('Upload session not found');
 
     const presignedUrl = await this.storage.presignPart(
-      session.file.s3Key,
+      session.file.s3Key!,
       session.s3UploadId,
       partNumber,
     );
@@ -153,16 +153,16 @@ export class FilesService {
     }));
 
     await this.storage.completeMultipartUpload(
-      file.s3Key,
+      file.s3Key!,
       session.s3UploadId,
       parts,
     );
 
     // Verify checksum when MinIO returns one; fall back gracefully if not set.
-    const { checksumSha256 } = await this.storage.headObject(file.s3Key);
+    const { checksumSha256 } = await this.storage.headObject(file.s3Key!);
     if (checksumSha256 && checksumSha256 !== file.checksum) {
       this.logger.warn(`Checksum mismatch for file ${fileId}`);
-      await this.storage.abortMultipartUpload(file.s3Key, session.s3UploadId);
+      await this.storage.abortMultipartUpload(file.s3Key!, session.s3UploadId);
       await this.prisma.uploadSession.delete({ where: { fileId } });
       await this.prisma.file.update({
         where: { id: fileId },
@@ -286,7 +286,7 @@ export class FilesService {
     }
 
     this.logger.log(`Download issued: slug=${slug} file="${file.fileName}"`);
-    return this.storage.presignDownload(file.s3Key, file.fileName, 60);
+    return this.storage.presignDownload(file.s3Key!, file.fileName, 60);
   }
 
   // ---------------------------------------------------------------------------
@@ -337,18 +337,18 @@ export class FilesService {
 
   /**
    * Soft-deletes a file: removes the object from MinIO, sets status=DELETED,
-   * and decrements the owner's usedStorage.
+   * nulls s3Key (confirming S3 cleanup), and decrements the owner's usedStorage.
    */
   async deleteFile(fileId: string, userId: string): Promise<void> {
     const file = await this.findOwnedFile(fileId, userId);
     this.logger.log(`File deleted: slug=${file.slug} file=${fileId} owner=${userId}`);
 
-    await this.storage.deleteObject(file.s3Key);
+    await this.storage.deleteObject(file.s3Key!);
 
     await this.prisma.$transaction(async (tx) => {
       await tx.file.update({
         where: { id: file.id },
-        data: { status: 'DELETED' },
+        data: { status: 'DELETED', s3Key: null },
       });
       if (file.status === 'READY') {
         await tx.user.update({
@@ -397,23 +397,34 @@ export class FilesService {
     return file;
   }
 
-  /** Cleans up an expired file: delete from MinIO, mark DELETED, decrement quota. */
+  /**
+   * Cleans up an expired file: deletes from MinIO, marks DELETED, decrements quota.
+   * Nulls s3Key only on successful S3 deletion — a non-null s3Key on a DELETED
+   * file signals an orphaned object for the reconciliation cron to retry.
+   */
   private async expireFile(file: {
     id: string;
-    s3Key: string;
+    s3Key: string | null;
     ownerId: string | null;
     size: bigint;
   }): Promise<void> {
-    try {
-      await this.storage.deleteObject(file.s3Key);
-    } catch (err) {
-      this.logger.warn(`Failed to delete expired object ${file.s3Key}: ${err}`);
+    let s3Deleted = file.s3Key === null; // already clean if key is gone
+
+    if (file.s3Key) {
+      try {
+        await this.storage.deleteObject(file.s3Key);
+        s3Deleted = true;
+      } catch (err) {
+        this.logger.warn(`Failed to delete expired object ${file.s3Key}: ${err}`);
+      }
     }
 
     await this.prisma.$transaction(async (tx) => {
       const { count } = await tx.file.updateMany({
         where: { id: file.id, status: 'READY' },
-        data: { status: 'DELETED' },
+        data: s3Deleted
+          ? { status: 'DELETED', s3Key: null }
+          : { status: 'DELETED' },
       });
       if (count > 0 && file.ownerId) {
         await tx.user.update({
@@ -422,5 +433,36 @@ export class FilesService {
         });
       }
     });
+  }
+
+  /**
+   * Daily cron (3 AM): retries S3 deletion for DELETED files whose s3Key is
+   * still set, meaning a previous deletion attempt failed and left an orphan.
+   * DeleteObject is idempotent — safe to call even if the object is already gone.
+   */
+  @Cron(CronExpression.EVERY_DAY_AT_3AM)
+  async reconcileOrphanedObjects(): Promise<void> {
+    const orphans = await this.prisma.file.findMany({
+      where: { status: 'DELETED', s3Key: { not: null } },
+      take: 1000,
+    });
+
+    if (orphans.length === 0) return;
+    this.logger.log(`Reconciling ${orphans.length} orphaned S3 object(s)`);
+
+    let purged = 0;
+    for (const file of orphans) {
+      try {
+        await this.storage.deleteObject(file.s3Key!);
+        await this.prisma.file.update({
+          where: { id: file.id },
+          data: { s3Key: null },
+        });
+        purged++;
+      } catch (err) {
+        this.logger.warn(`Reconcile: failed to purge ${file.s3Key}: ${err}`);
+      }
+    }
+    this.logger.log(`Reconcile complete: ${purged}/${orphans.length} purged`);
   }
 }

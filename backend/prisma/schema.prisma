@@ -22,7 +22,7 @@ model File {
   id            String         @id @default(uuid())
   slug          String         @unique // NanoID, alphanumeric, 12 chars
   fileName      String
-  s3Key         String // Object path in MinIO bucket
+  s3Key         String? // Object path in MinIO bucket; null once S3 object is confirmed deleted
   size          BigInt
   mimeType      String
   checksum      String // SHA-256, provided by client before upload
@@ -52,5 +52,5 @@ model UploadSession {
 enum FileStatus {
   PENDING // Multipart upload in progress
   READY // Upload verified; file is publicly accessible
-  DELETED // Soft-deleted; object removed from MinIO
+  DELETED // Soft-deleted; s3Key is null once the MinIO object is confirmed deleted
 }
